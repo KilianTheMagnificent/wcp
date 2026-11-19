@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -315,8 +316,15 @@ class ChecksTests(GitxBase):
         self.assertIn('spawned', r['output_tail'])
         self.assertIn('timed out', r['output_tail'])
         grandchild_pid = int(pidfile.read_text())
-        with self.assertRaises(ProcessLookupError):
-            os.kill(grandchild_pid, 0)
+        deadline = time.monotonic() + 2.0
+        while True:
+            try:
+                os.kill(grandchild_pid, 0)
+            except ProcessLookupError:
+                break
+            if time.monotonic() >= deadline:
+                self.fail('grandchild process %d survived timeout kill' % grandchild_pid)
+            time.sleep(0.02)
 
 
 class NoOptionalLocksTests(GitxBase):
