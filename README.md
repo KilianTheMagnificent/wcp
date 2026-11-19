@@ -16,7 +16,18 @@
 
 ## Install
 
-Clone the repository and run the thin launcher directly, or add `bin/` to your `PATH`:
+Run directly without installing using [`uvx`](https://docs.astral.sh/uv/), or install onto your `PATH` with [`pipx`](https://pipx.pypa.io/):
+
+```sh
+# Try without installing
+uvx --from git+https://github.com/KilianTheMagnificent/wcp wcp version
+
+# Or install globally in an isolated environment
+pipx install git+https://github.com/KilianTheMagnificent/wcp
+wcp version
+```
+
+Or clone the repository and run the thin launcher directly, or add `bin/` to your `PATH`:
 
 ```sh
 git clone https://github.com/KilianTheMagnificent/wcp.git
@@ -24,7 +35,7 @@ cd wcp
 ./bin/wcp version
 ```
 
-To make `wcp` available from any repository:
+To make `./bin/wcp` available from any repository:
 
 ```sh
 export PATH="$PWD/bin:$PATH"

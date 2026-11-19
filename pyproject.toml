@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=77.0.3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wcp"
+version = "0.3.0"
+description = "Workspace Coordination Protocol — zero-dependency CLI for concurrent multi-agent work in a single Git repository"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+authors = [{ name = "Andre Romero" }]
+dependencies = []
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Version Control :: Git",
+]
+
+[project.urls]
+Homepage = "https://github.com/KilianTheMagnificent/wcp"
+Repository = "https://github.com/KilianTheMagnificent/wcp"
+Issues = "https://github.com/KilianTheMagnificent/wcp/issues"
+
+[project.scripts]
+wcp = "wcp.cli:main"
+
+[tool.setuptools]
+packages = ["wcp"]
