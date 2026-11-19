@@ -15,8 +15,8 @@ from .db import ProtocolError
 _REQUIRED_DIR_FD = {os.open, os.mkdir, os.unlink, os.rename, os.stat}
 if not _REQUIRED_DIR_FD <= os.supports_dir_fd:
     raise RuntimeError("wcp needs dir_fd support for open, mkdir, unlink, rename, stat")
-if os.chmod not in os.supports_dir_fd or os.chmod not in os.supports_follow_symlinks:
-    raise RuntimeError("wcp needs os.chmod(dir_fd=, follow_symlinks=False)")
+if not hasattr(os, "fchmod"):
+    raise RuntimeError("wcp needs os.fchmod support")
 
 _SENSITIVE_DIRS = frozenset({".ssh", ".aws", ".kube", ".gnupg", ".docker"})
 _SENSITIVE_EXEMPT = frozenset({".env.example", ".env.sample", ".env.template"})
@@ -157,13 +157,25 @@ def set_exec_bit(tree: Path, rel: str, mode: str) -> None:
     rel_dir, name = _split(rel)
     fd = open_dir_chain(tree, rel_dir, create=False)
     try:
-        perm = _stat_regular(name, fd, rel).st_mode & 0o7777
-        if mode == "100755":
-            new = perm | ((perm & 0o444) >> 2)
-        else:
-            new = perm & ~0o111
-        if new != perm:
-            os.chmod(name, new, dir_fd=fd, follow_symlinks=False)
+        try:
+            rfd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+        except OSError as e:
+            if e.errno in _NOFOLLOW_ERRNOS:
+                raise _unsafe(rel, name, "not a regular file")
+            raise
+        try:
+            st = os.fstat(rfd)
+            if not stat.S_ISREG(st.st_mode):
+                raise _unsafe(rel, name, "not a regular file")
+            perm = st.st_mode & 0o7777
+            if mode == "100755":
+                new = perm | ((perm & 0o444) >> 2)
+            else:
+                new = perm & ~0o111
+            if new != perm:
+                os.fchmod(rfd, new)
+        finally:
+            os.close(rfd)
     finally:
         os.close(fd)
 
