@@ -516,9 +516,10 @@ class Runner:
         rts = self._rts()
         accepted = [r['key'] for r in rts if r['status'] == 'accepted']
         paused = [{'key': r['key'], 'last_error': r['last_error']} for r in rts if r['status'] == 'paused']
+        in_flight = any(r['status'] in ('building', 'submit_pending', 'verifying') for r in rts)
         if len(accepted) == len(rts):
             status = 'done'
-        elif paused and self._live_count() == 0:
+        elif paused and not in_flight and self._live_count() == 0:
             status = 'paused'
         else:
             status = 'running'
