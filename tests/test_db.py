@@ -67,6 +67,7 @@ class DbTests(Base):
 
     def test_write_txn_rollback_and_no_nesting(self):
         conn = db.open_db(self.root)
+        self.addCleanup(conn.close)
         with self.assertRaises(ValueError):
             with db.write_txn(conn):
                 db.meta_set(conn, "k", "v")
@@ -83,6 +84,8 @@ class DbTests(Base):
     def test_epoch_monotonic_across_two_connections(self):
         c1 = db.open_db(self.root)
         c2 = db.open_db(self.root)
+        self.addCleanup(c1.close)
+        self.addCleanup(c2.close)
         seen = []
         for i in range(6):
             conn = c1 if i % 2 == 0 else c2
@@ -95,6 +98,7 @@ class DbTests(Base):
     def test_new_id_and_events(self):
         self.assertRegex(db.new_id("t-"), r"^t-[0-9a-f]{6}$")
         conn = db.open_db(self.root)
+        self.addCleanup(conn.close)
         self.insert_task(conn)
         with db.write_txn(conn):
             db.add_event(conn, "t-000001", "note", {"b": 1, "a": "x"})
@@ -122,6 +126,7 @@ class DbTests(Base):
             self.assertEqual(cm.exception.code, "lock_held")
             self.assertEqual(cm.exception.detail.get("holder"), "child")
             conn = db.open_db(self.root)
+            self.addCleanup(conn.close)
             self.assertEqual(conn.execute("SELECT holder FROM locks WHERE name='integrator'").fetchone()["holder"], "child")
             child.stdin.write("\n")
             child.stdin.flush()
@@ -230,6 +235,7 @@ class ModelTests(Base):
 
     def test_transition_and_cas(self):
         conn = db.open_db(self.root)
+        self.addCleanup(conn.close)
         t = self.insert_task(conn)
         self.assertEqual((t.state, t.version), ("proposed", 0))
         with db.write_txn(conn):
@@ -270,6 +276,7 @@ class ModelTests(Base):
 
     def test_cancel_refused_from_verifying(self):
         conn = db.open_db(self.root)
+        self.addCleanup(conn.close)
         t = self.insert_task(conn, state="verifying")
         with self.assertRaises(ProtocolError) as cm:
             with db.write_txn(conn):
@@ -278,6 +285,7 @@ class ModelTests(Base):
 
     def test_loaders(self):
         conn = db.open_db(self.root)
+        self.addCleanup(conn.close)
         t = self.insert_task(conn)
         with db.write_txn(conn):
             conn.executemany("INSERT INTO task_scopes VALUES (?,?,?)",

@@ -75,7 +75,11 @@ def _root(ns) -> Path:
 
 def _open(ns):
     root = _root(ns)
-    return root, db.open_db(root)
+    conn = db.open_db(root)
+    conns = getattr(ns, '_conns', None)
+    if conns is not None:
+        conns.append(conn)
+    return root, conn
 
 
 def _task_view(conn, task: model.Task) -> dict:
@@ -484,6 +488,7 @@ def main(argv=None) -> int:
     except SystemExit as e:  # argparse: 0 for --help, 2 for usage
         return 0 if e.code in (None, 0) else 2
     as_json = bool(getattr(ns, 'json', False))
+    ns._conns = []
     try:
         if hasattr(ns, 'owner'):
             tasks.validate_owner(ns.owner)
@@ -504,3 +509,6 @@ def main(argv=None) -> int:
             traceback.print_exc()
         _emit_error(as_json, 'internal', '%s: %s' % (type(e).__name__, e), {})
         return 1
+    finally:
+        for conn in ns._conns:
+            conn.close()
