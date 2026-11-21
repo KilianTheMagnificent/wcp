@@ -116,6 +116,36 @@ class PlanTests(unittest.TestCase):
              mock.patch.object(sys, 'executable', '/opt/my python/bin/python3'):
             self.assertEqual(run.wcp_command(), "'/opt/my python/bin/python3' -m wcp")
 
+    def test_builder_env_allows_ai_keys_and_env_passthrough(self):
+        base = {
+            'HOME': '/h', 'PATH': '/bin',
+            'ANTHROPIC_API_KEY': 'sk-ant-test', 'OPENAI_API_KEY': 'sk-openai-test',
+            'GEMINI_API_KEY': 'gem-test', 'GOOGLE_API_KEY': 'goog-test', 'XAI_API_KEY': 'xai-test',
+            'HTTP_PROXY': 'http://proxy:8080', 'HTTPS_PROXY': 'https://proxy:8443', 'NO_PROXY': 'localhost',
+            'VIRTUAL_ENV': '/venv', 'SSL_CERT_FILE': '/ca.pem', 'REQUESTS_CA_BUNDLE': '/ca.pem',
+            'CUSTOM_BUILD_FLAG': '1', 'AWS_SECRET_ACCESS_KEY': 'secret',
+            'WCP_ROLE': 'integrator', 'PYTHONPATH': '/evil',
+        }
+        ctx = {'task_id': 't-1', 'owner': 'run:r-1:a', 'epoch': 1, 'worktree': '/wt', 'key': 'a'}
+        env = run.builder_env(base, ctx, extra_allow=('CUSTOM_BUILD_FLAG', 'WCP_ROLE', 'PYTHONPATH'))
+        for k in ('ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'XAI_API_KEY',
+                  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'VIRTUAL_ENV', 'SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE',
+                  'CUSTOM_BUILD_FLAG'):
+            self.assertEqual(env[k], base[k], k)
+        self.assertNotIn('AWS_SECRET_ACCESS_KEY', env)
+        self.assertNotIn('PYTHONPATH', env)
+        self.assertEqual(env['WCP_ROLE'], 'builder')
+        # validate_plan accepts valid env_passthrough and rejects WCP_* / loader vars
+        p = self.good()
+        p['builders'] = {'fake': {'argv': ['python3', 'x.py'], 'env_passthrough': ['CUSTOM_BUILD_FLAG']}}
+        out = run.validate_plan(p)
+        self.assertEqual(out['builders']['fake']['env_passthrough'], ['CUSTOM_BUILD_FLAG'])
+        for bad_var in ('WCP_ROLE', 'WCP_HOME', 'PYTHONPATH', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'A=B', ''):
+            self.usage(
+                lambda q, v=bad_var: q['builders'].update(fake={'argv': ['python3', 'x.py'], 'env_passthrough': [v]}),
+                f'refuse {bad_var!r}',
+            )
+
     def test_brief_is_deterministic_and_complete(self):
         t = task('a', ['src/**', 'docs/a.md'], check=['python3 -m unittest'], brief='Be terse.', resource=['port:1'])
         ctx = {'key': 'a', 'task_id': 't-1', 'owner': 'run:r-1:a', 'epoch': 2, 'worktree': '/wt', 'root': '/repo',

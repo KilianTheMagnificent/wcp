@@ -7,7 +7,9 @@ import json
 import os
 import secrets
 import sqlite3
+import sys
 import time
+import urllib.parse
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -58,6 +60,14 @@ CREATE TABLE IF NOT EXISTS run_tasks(
 CREATE TABLE IF NOT EXISTS run_attempts(
     run_id TEXT, key TEXT, attempt INT, task_epoch INT, log_path TEXT, pgid INT, started_at REAL,
     exited_at REAL, exit_code INT, PRIMARY KEY(run_id, key, attempt));
+CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state);
+CREATE INDEX IF NOT EXISTS idx_worktrees_task_status ON worktrees(task_id, status);
+CREATE INDEX IF NOT EXISTS idx_task_scopes_kind_task ON task_scopes(kind, task_id);
+CREATE INDEX IF NOT EXISTS idx_submissions_task ON submissions(task_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_receipts_task_sub ON receipts(task_id, submission_id);
+CREATE INDEX IF NOT EXISTS idx_scope_requests_task_status ON scope_requests(task_id, status);
+CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id);
+CREATE INDEX IF NOT EXISTS idx_run_tasks_run_status ON run_tasks(run_id, status);
 """
 
 
@@ -86,7 +96,12 @@ def DEFAULT_HOME() -> Path:
     env = os.environ.get("WCP_HOME")
     if env:
         return Path(env)
-    return Path.home() / "Library" / "Application Support" / "wcp"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / "wcp"
+    xdg = os.environ.get("XDG_DATA_HOME")
+    if xdg:
+        return Path(xdg) / "wcp"
+    return Path.home() / ".local" / "share" / "wcp"
 
 
 def ensure_private(path: Path, is_dir: bool) -> None:
@@ -117,12 +132,31 @@ def repo_dir(root: Path) -> Path:
     return d
 
 
-def open_db(root: Path) -> sqlite3.Connection:
+def open_db(root: Path, read_only: bool = False) -> sqlite3.Connection:
+    if read_only:
+        db_path = DEFAULT_HOME() / "repos" / repo_id(root) / "state.sqlite3"
+        if db_path.is_file():
+            conn = sqlite3.connect(
+                "file:%s?mode=ro" % urllib.parse.quote(str(db_path)),
+                uri=True,
+                timeout=5.0,
+                isolation_level=None,
+            )
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA foreign_keys=ON")
+            try:
+                if meta_get(conn, "schema_version") == SCHEMA_VERSION:
+                    return conn
+            except sqlite3.OperationalError:
+                pass
+            conn.close()
     d = repo_dir(root)
     db_path = d / "state.sqlite3"
     conn = sqlite3.connect(str(db_path), timeout=5.0, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(SCHEMA)
     ensure_private(db_path, False)
@@ -190,7 +224,7 @@ def integrator_lock(root: Path, holder: str):
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            conn = open_db(root)
+            conn = open_db(root, read_only=True)
             try:
                 row = conn.execute("SELECT holder, acquired_at FROM locks WHERE name='integrator'").fetchone()
             finally:

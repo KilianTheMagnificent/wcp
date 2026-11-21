@@ -73,9 +73,9 @@ def _root(ns) -> Path:
     return gitx.canonical_root(Path(getattr(ns, 'repo', None) or os.getcwd()))
 
 
-def _open(ns):
+def _open(ns, read_only: bool = False):
     root = _root(ns)
-    conn = db.open_db(root)
+    conn = db.open_db(root, read_only=read_only)
     conns = getattr(ns, '_conns', None)
     if conns is not None:
         conns.append(conn)
@@ -148,7 +148,7 @@ def _lease_text(task: model.Task, at: float) -> str:
 
 
 def cmd_status(ns):
-    root, conn = _open(ns)
+    root, conn = _open(ns, read_only=True)
     at = db.now()
     lock = conn.execute("SELECT holder, acquired_at FROM locks WHERE name='integrator'").fetchone()
     links = tasks.link_dirs(conn)
@@ -165,7 +165,7 @@ def cmd_status(ns):
 
 
 def cmd_ps(ns):
-    root, conn = _open(ns)
+    root, conn = _open(ns, read_only=True)
     at = db.now()
     rows = []
     for r in conn.execute('SELECT * FROM tasks ORDER BY created_at, id'):
@@ -295,12 +295,12 @@ def cmd_task_cleanup(ns):
 
 
 def cmd_task_show(ns):
-    root, conn = _open(ns)
+    root, conn = _open(ns, read_only=True)
     return _task_view(conn, model.load_task(conn, ns.id))
 
 
 def cmd_events(ns):
-    root, conn = _open(ns)
+    root, conn = _open(ns, read_only=True)
     model.load_task(conn, ns.id)
     return {'id': ns.id, 'events': [
         {'id': r['id'], 'at': r['at'], 'kind': r['kind'], 'detail': json.loads(r['detail_json'] or '{}')}

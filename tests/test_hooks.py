@@ -306,6 +306,24 @@ class DecideTests(Base):
         self.assertEqual(db_path.read_bytes(), before)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0], 0)
 
+    def test_decide_fast_path_skips_unrelated_repos_and_historical_worktrees(self):
+        # Register an unrelated repo whose DB is corrupted — hook for our repo must never even open it.
+        unrelated = self.tmp / "unrelated_repo"
+        unrelated.mkdir()
+        uconn = db.open_db(unrelated)
+        uconn.close()
+        (db.repo_dir(unrelated) / "state.sqlite3").write_bytes(b"corrupted unrelated db")
+        # Add many historical retired worktrees + one active task in our repo
+        for i in range(25):
+            tid = "t-%06x" % (i + 100)
+            self.add_task(tid=tid, state="accepted", epoch=1)
+            self.add_worktree(tid=tid, epoch=1, status="retired")
+        self.add_task(tid="t-active", state="running", epoch=1, write=("src/**",))
+        wt = self.add_worktree(tid="t-active", epoch=1, status="active")
+        self.assertAllow(claude("Write", str(wt / "src/ok.py"), str(wt)))
+        self.assertDeny(claude("Write", str(wt / "lib/no.py"), str(wt)), "scope")
+        self.assertFalse((self.home / "hook-errors.log").exists())
+
     def test_sensitive_paths_denied_in_worktree_and_canonical(self):
         self.add_task(write=("**",))
         wt = self.add_worktree()
@@ -364,6 +382,7 @@ class MainTests(Base):
     def test_internal_error_fails_open(self):
         self.add_task()
         wt = self.add_worktree()
+        self.conn.close()
         db_path = db.repo_dir(self.root) / "state.sqlite3"
         db_path.write_bytes(b"this is not a sqlite database")
         rc, out, err = self.run_main(json.dumps(claude("Write", str(wt / "lib/x.py"), str(wt))))
@@ -387,9 +406,11 @@ class MainTests(Base):
             self.assertEqual((rc, out, err), (0, "", ""))
         self.assertIn("OperationalError", (self.home / "hook-errors.log").read_text())
         # Real SQLite exclusive lock (shortened connect timeout so the test finishes quickly)
+        self.conn.close()
         db_path = db.repo_dir(self.root) / "state.sqlite3"
         locker = sqlite3.connect(str(db_path), isolation_level=None)
         self.addCleanup(locker.close)
+        locker.execute("PRAGMA locking_mode=EXCLUSIVE")
         locker.execute("BEGIN EXCLUSIVE")
         real_connect = sqlite3.connect
 

@@ -32,6 +32,12 @@ DISPATCHABLE = ('claimed', 'running', 'blocked')
 ENV_VARS = ('WCP_HOME', 'WCP_TASK', 'WCP_OWNER', 'WCP_EPOCH', 'WCP_WORKTREE', 'WCP_KEY', 'WCP_ROLE')
 BUILDER_ENV_ALLOWLIST = frozenset({
     'HOME', 'PATH', 'USER', 'LOGNAME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TERM', 'TMPDIR', 'SHELL',
+    'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'XAI_API_KEY',
+    'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'VIRTUAL_ENV', 'SSL_CERT_FILE', 'REQUESTS_CA_BUNDLE',
+})
+_BLOCKED_PASSTHROUGH = frozenset({
+    'PYTHONPATH', 'PYTHONSTARTUP', 'PYTHONHOME', 'GIT_SSH_COMMAND',
+    'LD_PRELOAD', 'LD_LIBRARY_PATH', 'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH',
 })
 PLACEHOLDERS = ('brief', 'worktree', 'task', 'owner', 'epoch', 'key')
 _KEY_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
@@ -73,15 +79,19 @@ def validate_plan(raw) -> dict:
     if not isinstance(builders, dict) or not builders:
         raise _usage('builders must be a non-empty object')
     for name, b in builders.items():
-        if not isinstance(b, dict) or set(b) - {'argv', 'timeout_s'}:
-            raise _usage('builder %s: only argv and timeout_s are allowed' % name)
+        if not isinstance(b, dict) or set(b) - {'argv', 'timeout_s', 'env_passthrough'}:
+            raise _usage('builder %s: only argv, timeout_s, and env_passthrough are allowed' % name)
         argv = _str_list(b.get('argv'), 'builder %s argv' % name)
         if not argv:
             raise _usage('builder %s argv is empty' % name)
         t = b.get('timeout_s', 1800)
         if isinstance(t, bool) or not isinstance(t, (int, float)) or t <= 0:
             raise _usage('builder %s timeout_s must be a positive number' % name)
-        builders[name] = {'argv': argv, 'timeout_s': t}
+        passthrough = _str_list(b.get('env_passthrough', []), 'builder %s env_passthrough' % name)
+        for var in passthrough:
+            if not var or '=' in var or var.startswith('WCP_') or var in _BLOCKED_PASSTHROUGH:
+                raise _usage('builder %s env_passthrough refuses %r' % (name, var))
+        builders[name] = {'argv': argv, 'timeout_s': t, 'env_passthrough': passthrough}
     tl = plan.get('tasks')
     if not isinstance(tl, list) or not tl:
         raise _usage('tasks must be a non-empty list')
@@ -159,10 +169,14 @@ def load_plan(path) -> dict:
 
 # ---------------------------------------------------------------- builder environment and brief (B1, B7)
 
-def builder_env(base_env: dict, ctx: dict) -> dict:
-    """Minimal allowlisted environment plus exactly the six builder variables and WCP_ROLE=builder:
-    ambient secrets, loader variables, and any inherited integrator role never reach a builder."""
-    env = {k: str(v) for k, v in base_env.items() if k in BUILDER_ENV_ALLOWLIST and v is not None}
+def builder_env(base_env: dict, ctx: dict, extra_allow=()) -> dict:
+    """Allowlisted environment (plus optional per-builder env_passthrough) and exactly the six builder
+    variables plus WCP_ROLE=builder: ambient non-allowlisted secrets, loader variables, and any
+    inherited integrator role never reach a builder."""
+    allow = BUILDER_ENV_ALLOWLIST | frozenset(
+        k for k in extra_allow if k and '=' not in k and not k.startswith('WCP_') and k not in _BLOCKED_PASSTHROUGH
+    )
+    env = {k: str(v) for k, v in base_env.items() if k in allow and v is not None}
     env.update({'WCP_HOME': str(db.DEFAULT_HOME()), 'WCP_TASK': ctx['task_id'], 'WCP_OWNER': ctx['owner'],
                 'WCP_EPOCH': str(ctx['epoch']), 'WCP_WORKTREE': ctx['worktree'], 'WCP_KEY': ctx['key'],
                 'WCP_ROLE': 'builder'})
@@ -840,7 +854,8 @@ class Runner:
         ctx = {'key': key, 'task_id': task.id, 'owner': self.owner(key), 'epoch': task.epoch,
                'worktree': task.worktree_path, 'root': str(self.root), 'wcp': wcp_command(), 'attempt': n,
                'obligations': list(obligations), 'retired_worktree': retired, 'failed_check': failed_check,
-               'previous_log': previous_log, 'exit_code': exit_code, 'note': note}
+               'previous_log': previous_log, 'exit_code': exit_code, 'note': note,
+               'env_passthrough': tuple(builder.get('env_passthrough', ()))}
         brief = brief_for(pt, ctx)
         log_path = str(self.run_dir / ('builder-%s-%d.log' % (key, n)))
         with db.write_txn(self.conn):  # intent before spawn
@@ -875,7 +890,7 @@ class Runner:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
                 raise ProtocolError('bad_state', 'attempt lock %s is already held' % lock_path, {'lock': str(lock_path)})
-            env = builder_env(os.environ, ctx)
+            env = builder_env(os.environ, ctx, extra_allow=ctx.get('env_passthrough', ()))
             # by absolute path, isolated: neither the worktree (cwd) nor PYTHONPATH can substitute the wrapper
             cmd = [sys.executable, '-I', _WRAPPER, str(self.run_dir), key, str(n), str(fd), '--'] + argv
             p = subprocess.Popen(cmd, cwd=ctx['worktree'], env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,

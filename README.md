@@ -151,7 +151,7 @@ A **paused** task retains its worktree, lease, and every attempt log; nothing is
 
 Key `wcp run` safeguards:
 - The repository must have checks configured via `wcp init`; a zero-check repository cannot start a run. Plan `check` entries are builder-side brief instructions and are never executed by the runner.
-- Builders inherit the lead environment with all `WCP_*` variables stripped, then receive only `WCP_HOME`, `WCP_TASK`, `WCP_OWNER`, `WCP_EPOCH`, `WCP_WORKTREE`, `WCP_KEY`, and `WCP_ROLE=builder`.
+- Builders receive a minimal allowlisted environment (standard shell/locale vars, proxy/TLS/virtualenv vars, and AI provider API keys `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `XAI_API_KEY`, plus any explicit per-builder `env_passthrough` entries) with all inherited `WCP_*` variables, loader hooks, and ambient non-allowlisted secrets stripped, then receive only `WCP_HOME`, `WCP_TASK`, `WCP_OWNER`, `WCP_EPOCH`, `WCP_WORKTREE`, `WCP_KEY`, and `WCP_ROLE=builder`.
 - Each attempt runs in its own process group under `wcp/_attempt.py` (invoked by absolute path with `python -I`, preventing a `wcp/` package inside the worktree from shadowing it), holds a per-attempt flock, and writes a `0600` redacted log (`builder-<key>-<n>.log`, capped at 1 MiB). Heuristic redaction covers common token patterns before marker extraction, but logs should still be treated as sensitive. Timeouts terminate the entire process group (`SIGTERM`, then `SIGKILL`).
 - Process output is never stored in SQLite, `run.jsonl`, or briefs; re-dispatch briefs include only the failed check command and exit code.
 - Builders may print `SCOPE-NEEDED: <path>` (exit 0, no edits) to request scope expansion, or `KEEP-CANONICAL: <path>` to accept canonical's version for a rebase obligation.
@@ -216,7 +216,7 @@ When launched inside an OS-level workspace sandbox, writes outside the assigned 
 
 ## State location and permissions
 
-All `wcp` state lives outside the repository under `WCP_HOME`. By default `WCP_HOME` is `~/Library/Application Support/wcp`; on Linux or in CI you can set `WCP_HOME` to any private directory (for example `export WCP_HOME="$HOME/.local/share/wcp"`).
+All `wcp` state lives outside the repository under `WCP_HOME`. By default `WCP_HOME` is `~/Library/Application Support/wcp` on macOS and `$XDG_DATA_HOME/wcp` (default `~/.local/share/wcp`) on Linux; you can override it anywhere with `WCP_HOME`.
 
 ```text
 WCP_HOME/repos/<repo_id>/state.sqlite3               mutable state database (0600)
@@ -242,7 +242,7 @@ WCP_HOME/hook-errors.log
 
 If `verify` ever reports `partial_publish`, a previous integrator died mid-publish and one of the listed canonical paths matches neither the bundle's before-hash nor after-hash. Nothing further is written. Compare those paths against `WCP_HOME/repos/<repo_id>/bundles/`, reconcile manually, and re-run `verify`; recovery is idempotent.
 
-## Limitations (v0.1)
+## Limitations
 
 - Git repositories only; non-git directories fail with `not_a_repo`.
 - `Bash` commands are not scope-enforced by the `PreToolUse` hook.

@@ -6,6 +6,7 @@ git. Fails open on any internal error (one line appended to WCP_HOME/hook-errors
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -77,11 +78,46 @@ def _home(home, env) -> Path:
     return Path(h) if h else db.DEFAULT_HOME()
 
 
-def _read_registry_state(home: Path) -> tuple[list[dict], list[tuple[str, str, sqlite3.OperationalError]]]:
-    """(repos, locked) from read-only opens of state DBs; OperationalError is captured per repo."""
+def _candidate_repo_ids(home: Path, target_paths: list[str], env) -> set[str]:
+    """Candidate repo_ids that could contain any target path (either as a canonical ancestor or under WCP_HOME/repos/<id>)."""
+    rids: set[str] = set()
+    repos_dir = os.path.realpath(home / "repos")
+    scan = list(target_paths)
+    env_wt = env.get("WCP_WORKTREE") if env else None
+    if env_wt:
+        scan.append(os.path.realpath(env_wt))
+    prefix = repos_dir.rstrip("/") + "/"
+    for p in scan:
+        if p.startswith(prefix):
+            rid = p[len(prefix):].split("/", 1)[0]
+            if rid:
+                rids.add(rid)
+        cur = Path(p)
+        for d in (cur, *cur.parents):
+            rids.add(hashlib.sha256(str(d).encode("utf-8")).hexdigest()[:16])
+    return rids
+
+
+def _read_registry_state(
+    home: Path,
+    target_paths: list[str] | None = None,
+    env=None,
+) -> tuple[list[dict], list[tuple[str, str, sqlite3.OperationalError]]]:
+    """(repos, locked) from read-only opens of state DBs; OperationalError is captured per repo.
+
+    When target_paths is given, unrelated repos and closed historical worktrees/tasks are skipped.
+    """
     repos = []
     locked = []
-    for db_path in sorted((home / "repos").glob("*/state.sqlite3")):
+    db_paths = sorted((home / "repos").glob("*/state.sqlite3"))
+    if target_paths is not None:
+        cand_rids = _candidate_repo_ids(home, target_paths, env)
+        if cand_rids or not (env and env.get("WCP_ROLE") == "builder"):
+            db_paths = [p for p in db_paths if p.parent.name in cand_rids]
+    active_list = sorted(ACTIVE_STATES)
+    q_states = ",".join("?" for _ in active_list)
+    for db_path in db_paths:
+        real_wt_root = os.path.realpath(db_path.parent / "worktrees")
         try:
             conn = sqlite3.connect("file:%s?mode=ro" % urllib.parse.quote(str(db_path)), uri=True, timeout=2.0)
             conn.row_factory = sqlite3.Row
@@ -89,18 +125,66 @@ def _read_registry_state(home: Path) -> tuple[list[dict], list[tuple[str, str, s
                 root = db.meta_get(conn, "root")
                 if not root:
                     continue
-                tasks = {r["id"]: dict(r) for r in conn.execute(
-                    "SELECT id, state, epoch, lease_expires_at FROM tasks")}
-                scopes: dict[str, list[str]] = {}
-                for r in conn.execute("SELECT task_id, pattern FROM task_scopes WHERE kind='path' ORDER BY pattern"):
-                    scopes.setdefault(r["task_id"], []).append(r["pattern"])
-                worktrees = [dict(r) for r in conn.execute("SELECT path, task_id, epoch, status FROM worktrees")]
+                real_root = os.path.realpath(root)
+                if target_paths is None:
+                    tasks = {r["id"]: dict(r) for r in conn.execute(
+                        "SELECT id, state, epoch, lease_expires_at FROM tasks")}
+                    scopes: dict[str, list[str]] = {}
+                    for r in conn.execute("SELECT task_id, pattern FROM task_scopes WHERE kind='path' ORDER BY pattern"):
+                        scopes.setdefault(r["task_id"], []).append(r["pattern"])
+                    worktrees = [dict(r) for r in conn.execute("SELECT path, task_id, epoch, status FROM worktrees")]
+                else:
+                    wt_prefix = real_wt_root.rstrip("/") + "/"
+                    wt_names = {
+                        p[len(wt_prefix):].split("/", 1)[0]
+                        for p in target_paths
+                        if p.startswith(wt_prefix)
+                    }
+                    wt_names.discard("")
+                    hits_root = any(_under(p, real_root) for p in target_paths)
+                    if not hits_root and not wt_names:
+                        continue
+                    worktrees = [dict(r) for r in conn.execute(
+                        "SELECT path, task_id, epoch, status FROM worktrees WHERE status != 'retired'")]
+                    if wt_names:
+                        clauses = []
+                        params: list = []
+                        for name in sorted(wt_names):
+                            suffix = "/" + name
+                            clauses.append("substr(path, -?) = ?")
+                            params.extend([len(suffix), suffix])
+                        worktrees.extend(dict(r) for r in conn.execute(
+                            "SELECT path, task_id, epoch, status FROM worktrees "
+                            "WHERE status = 'retired' AND (" + " OR ".join(clauses) + ")",
+                            params,
+                        ))
+                    wt_tids = sorted({w["task_id"] for w in worktrees if w["task_id"]})
+                    if wt_tids:
+                        q_tids = ",".join("?" for _ in wt_tids)
+                        task_sql = (
+                            f"SELECT id, state, epoch, lease_expires_at FROM tasks "
+                            f"WHERE state IN ({q_states}) OR id IN ({q_tids})"
+                        )
+                        task_params = active_list + wt_tids
+                    else:
+                        task_sql = f"SELECT id, state, epoch, lease_expires_at FROM tasks WHERE state IN ({q_states})"
+                        task_params = active_list
+                    tasks = {r["id"]: dict(r) for r in conn.execute(task_sql, task_params)}
+                    scopes = {}
+                    if wt_tids:
+                        q_tids = ",".join("?" for _ in wt_tids)
+                        for r in conn.execute(
+                            f"SELECT task_id, pattern FROM task_scopes WHERE kind='path' "
+                            f"AND task_id IN ({q_tids}) ORDER BY pattern",
+                            wt_tids,
+                        ):
+                            scopes.setdefault(r["task_id"], []).append(r["pattern"])
             finally:
                 conn.close()
         except sqlite3.OperationalError as e:
-            locked.append((db_path.parent.name, os.path.realpath(db_path.parent / "worktrees"), e))
+            locked.append((db_path.parent.name, real_wt_root, e))
             continue
-        repos.append({"root": os.path.realpath(root), "tasks": tasks, "scopes": scopes, "worktrees": worktrees})
+        repos.append({"root": real_root, "tasks": tasks, "scopes": scopes, "worktrees": worktrees})
     return repos, locked
 
 
@@ -186,8 +270,13 @@ def decide(payload: dict, home: Path | None = None, env: dict | None = None) -> 
     if not candidates:
         return True, "no path"
     home_dir = _home(home, env)
+    cwd = os.path.realpath(norm["cwd"])
+    target_paths = [cwd] + [
+        os.path.realpath(c if os.path.isabs(c) else os.path.join(cwd, c))
+        for c in candidates if "\0" not in c
+    ]
     if _read_registry is _DEFAULT_READ_REGISTRY:
-        repos, locked = _read_registry_state(home_dir)
+        repos, locked = _read_registry_state(home_dir, target_paths=target_paths, env=env)
     else:
         try:
             repos, locked = _read_registry(home_dir), []
@@ -198,7 +287,6 @@ def decide(payload: dict, home: Path | None = None, env: dict | None = None) -> 
     for _, _, exc in locked:
         _log_error(home, env, exc)
     roots = _roots(repos)
-    cwd = os.path.realpath(norm["cwd"])
     if locked and (_in_locked_worktree(cwd, locked, env) or env.get("WCP_ROLE") == "builder"):
         return False, "wcp: state database unavailable; refusing write inside registered worktree"
     cwd_hit = _containing(cwd, roots)

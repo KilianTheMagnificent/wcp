@@ -62,8 +62,32 @@ class DbTests(Base):
         conn2 = db.open_db(self.root)  # idempotent
         self.assertEqual(db.meta_get(conn2, "epoch"), "0")
         self.assertEqual(len(db.repo_id(self.root)), 16)
+        self.assertEqual(conn.execute("PRAGMA journal_mode").fetchone()[0].lower(), "wal")
+        indexes = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='index'")}
+        self.assertTrue({"idx_tasks_state", "idx_worktrees_task_status", "idx_task_scopes_kind_task",
+                         "idx_events_task", "idx_run_tasks_run_status"} <= indexes)
         conn.close()
         conn2.close()
+
+    def test_open_db_read_only_skips_writes_when_db_exists(self):
+        conn = db.open_db(self.root)
+        conn.close()
+        ro = db.open_db(self.root, read_only=True)
+        self.addCleanup(ro.close)
+        self.assertEqual(db.meta_get(ro, "epoch"), "0")
+        with self.assertRaises(sqlite3.OperationalError):
+            ro.execute("INSERT INTO meta(key, value) VALUES ('ro_test', '1')")
+
+    def test_default_home_platform_paths(self):
+        from unittest import mock
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with mock.patch.object(db.sys, "platform", "darwin"):
+                self.assertEqual(db.DEFAULT_HOME(), Path.home() / "Library" / "Application Support" / "wcp")
+            with mock.patch.object(db.sys, "platform", "linux"):
+                self.assertEqual(db.DEFAULT_HOME(), Path.home() / ".local" / "share" / "wcp")
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/tmp/xdg-data"}, clear=True):
+            with mock.patch.object(db.sys, "platform", "linux"):
+                self.assertEqual(db.DEFAULT_HOME(), Path("/tmp/xdg-data/wcp"))
 
     def test_write_txn_rollback_and_no_nesting(self):
         conn = db.open_db(self.root)
