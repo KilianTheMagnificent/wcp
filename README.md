@@ -270,7 +270,7 @@ python3 -m unittest tests.test_scope -v
 
 ## Status & How This Was Built
 
-- **Current status:** `v0.3.0` implementing Workspace Coordination Protocol v0.1. Ready for local multi-agent Git workflows on macOS and Linux. `wcp` is a local developer CLI and does not handle logins, encryption, backups, or passwords.
+- **Current status:** `v0.3.1` implementing Workspace Coordination Protocol v0.1. Ready for local multi-agent Git workflows on macOS and Linux. `wcp` is a local developer CLI and does not handle logins, encryption, backups, or passwords.
 - **How this was built:** Andre directs design, specifications, and verification with AI coding assistants. Behavior is checked through 232 automated unit and black-box acceptance tests — covering concurrent claim races, stale-epoch fencing, drift detection, crash recovery, partial-publish journaling, sensitive-path exclusion, hook enforcement, and `wcp run` orchestration — which you can verify directly on your own machine with `python3 -m unittest discover -s tests -v`.
 
 Bug reports and documentation feedback are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). For security issues, see [SECURITY.md](SECURITY.md).

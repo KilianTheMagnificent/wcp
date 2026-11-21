@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "wcp"
-version = "0.3.0"
+version = "0.3.1"
 description = "Workspace Coordination Protocol — zero-dependency CLI for concurrent multi-agent work in a single Git repository"
 readme = "README.md"
 license = { text = "MIT" }

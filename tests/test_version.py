@@ -28,7 +28,7 @@ class VersionTests(unittest.TestCase):
         self.assertEqual(out['version'], wcp.__version__)
 
     def test_version_literal(self):
-        self.assertEqual(wcp.__version__, '0.3.0')
+        self.assertEqual(wcp.__version__, '0.3.1')
 
 
 if __name__ == '__main__':
